@@ -16,6 +16,10 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 
+# --- Initialize Session State (add this near the top) ---
+if 'results_list' not in st.session_state:
+    st.session_state.results_list = [] # Initialize if not already present
+
 # --- Page Config (MUST be the first Streamlit command) ---
 st.set_page_config(page_title="Axos Internal AML Demo", layout="wide")
 
@@ -270,17 +274,8 @@ if start_button and company_names_input:
     company_names = [name.strip() for name in company_names_input.split('\n') if name.strip()]
     st.info(f"Processing {len(company_names)} company name(s)... Please wait.")
     
-    # Use columns for better layout of results
-    col1, col2 = st.columns([3, 1]) # Company name/status in first col, download button in second
-    
-    with col1:
-        st.subheader("Processing Status:")
-        
-    with col2:
-        st.write("") # Placeholder for alignment
-
-    results_placeholder = st.empty()
-    results_list = []
+    # Clear previous results from session state when starting a new generation
+    st.session_state.results_list = []
 
     progress_bar = st.progress(0)
     total_names = len(company_names)
@@ -299,7 +294,8 @@ if start_button and company_names_input:
                     status = "failed"
                     error_message = "PDF generation failed."
             
-            results_list.append({
+            # Append results to SESSION STATE instead of a temporary list
+            st.session_state.results_list.append({
                 'name': name,
                 'status': status,
                 'error_message': error_message,
@@ -312,7 +308,6 @@ if start_button and company_names_input:
 
     # Display results with download buttons after processing all
     st.success("Processing Complete!")
-    results_placeholder.empty() # Clear the overall status message if needed
     
     st.divider()
     st.subheader("Download Reports:")
@@ -329,7 +324,7 @@ if start_button and company_names_input:
         if grade == 'F': return "red"
         return "grey"
         
-    for result in results_list:
+    for result in st.session_state.results_list:
         with cols[current_col]:
             if result['status'] == 'success' and result['pdf_bytes']:
                 safe_name = "".join(c if c.isalnum() else '_' for c in result['name'])
