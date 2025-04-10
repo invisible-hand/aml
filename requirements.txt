@@ -4,6 +4,7 @@ python-dotenv==1.0.1
 openai==1.28.0 # Used for Perplexity API
 reportlab==4.1.0
 requests==2.31.0 # Potentially needed by dependencies
+# httpx==0.27.0 # Removed - Not needed for standard client init
 
 # Removed:
 # flask==3.0.2

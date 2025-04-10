@@ -78,24 +78,45 @@ else:
 PERPLEXITY_API_BASE_URL = "https://api.perplexity.ai"
 
 openai_client = None
+client_init_error_msg = None # Store specific error message
+
 if PERPLEXITY_API_KEY:
     # Log the key just before use (masked)
     masked_key_for_log = f"{PERPLEXITY_API_KEY[:7]}...{PERPLEXITY_API_KEY[-4:]}" if PERPLEXITY_API_KEY and len(PERPLEXITY_API_KEY) > 11 else "Invalid Key Format"
     logging.info(f"Attempting to initialize OpenAI client with key: {masked_key_for_log}")
     try:
-        openai_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url=PERPLEXITY_API_BASE_URL)
+        # Explicitly create an httpx client that ignores system proxies
+        # http_client = httpx.Client(proxies=None) 
+        
+        # Revert to standard OpenAI client initialization
+        openai_client = OpenAI(
+            api_key=PERPLEXITY_API_KEY, 
+            base_url=PERPLEXITY_API_BASE_URL
+            # http_client=http_client # <-- REMOVE THIS PARAMETER
+        )
         logging.info("OpenAI client initialized pointing to Perplexity API.")
         st.sidebar.success("API Client Status: Initialized.")
     except Exception as client_init_error:
-        logging.error(f"Failed to initialize OpenAI client: {client_init_error}", exc_info=True)
+        client_init_error_msg = str(client_init_error) # Store error message
+        logging.error(f"Failed to initialize OpenAI client: {client_init_error_msg}", exc_info=True)
         openai_client = None 
-        st.sidebar.error(f"API Client Status: Failed ({client_init_error})") # Show error detail
+        st.sidebar.error(f"API Client Status: Failed ({client_init_error_msg})") # Show error detail
 else:
     st.sidebar.warning("API Client Status: Not initialized (No API Key).")
 
 # Error message shown only if client is STILL None
-if not openai_client: 
-    st.error(f"ERROR: Perplexity API client could not be initialized. Status: {st.sidebar.elements[2].label}. Please check API Key and app logs.") # Reference sidebar status
+if not openai_client:
+    # Construct error message without accessing sidebar elements
+    final_error_msg = "ERROR: Perplexity API client could not be initialized. "
+    if not API_KEY_LOADED_SUCCESSFULLY:
+        final_error_msg += f"API key was not loaded (checked {SOURCE_MESSAGE}). "
+    elif client_init_error_msg:
+        final_error_msg += f"Client initialization failed: {client_init_error_msg}. "
+    else:
+         final_error_msg += "Unknown initialization error. " # Fallback
+    final_error_msg += "Please check API Key, app logs, and verify configuration."
+    
+    st.error(final_error_msg)
     st.stop()
 
 NEGATIVE_KEYWORDS = '(arrest OR bankruptcy OR BSA OR conviction OR criminal OR fraud OR trafficking OR lawsuit OR "money laundering" OR OFAC OR Ponzi OR terrorist OR violation OR "honorary consul" OR consul OR "Panama Papers" OR theft OR corruption OR bribery)'
