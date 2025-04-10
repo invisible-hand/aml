@@ -24,30 +24,53 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Configuration & API Client Setup ---
 load_dotenv() # Load .env file for local development
 
-# Try environment variable first (ideal for local with .env)
-PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
-SOURCE = "environment variable"
-API_KEY_LOADED_SUCCESSFULLY = bool(PERPLEXITY_API_KEY)
+PERPLEXITY_API_KEY = None
+SOURCE_MESSAGE = "Key Source: Not found yet."
+API_KEY_LOADED_SUCCESSFULLY = False
 
-if not PERPLEXITY_API_KEY:
-    # If env var not found, try st.secrets (for deployment)
-    SOURCE = "Streamlit secrets"
-    logging.info("API key not in environment variables, trying st.secrets...")
-    try:
-        PERPLEXITY_API_KEY = st.secrets["PERPLEXITY_API_KEY"]
-        logging.info("Loaded API key from st.secrets")
+# 1. Try environment variable
+_raw_key_env = os.getenv('PERPLEXITY_API_KEY')
+if _raw_key_env:
+    PERPLEXITY_API_KEY = _raw_key_env.strip()
+    if PERPLEXITY_API_KEY: # Check if non-empty after strip
+        SOURCE_MESSAGE = "Key Source: Environment Variable"
         API_KEY_LOADED_SUCCESSFULLY = True
-    except (FileNotFoundError, KeyError):
-        logging.warning("API key not found in st.secrets either.")
-        PERPLEXITY_API_KEY = None 
+        logging.info(f"{SOURCE_MESSAGE}")
+    else:
+        logging.warning("Found PERPLEXITY_API_KEY in env vars, but it was empty.")
+
+# 2. If not found in env, try st.secrets
+if not API_KEY_LOADED_SUCCESSFULLY:
+    logging.info("API key not found in env vars, trying st.secrets...")
+    SOURCE_MESSAGE = "Key Source: Streamlit Secrets"
+    try:
+        _raw_key_secrets = st.secrets.get("PERPLEXITY_API_KEY") # Use .get for safety
+        if _raw_key_secrets:
+            PERPLEXITY_API_KEY = _raw_key_secrets.strip()
+            if PERPLEXITY_API_KEY:
+                logging.info("Loaded API key from st.secrets")
+                API_KEY_LOADED_SUCCESSFULLY = True
+                # SOURCE_MESSAGE already set
+            else:
+                logging.warning("Found PERPLEXITY_API_KEY in st.secrets, but it was empty after stripping.")
+                SOURCE_MESSAGE = "Key Source: Streamlit Secrets (Empty Key!)"
+        else:
+             logging.warning("PERPLEXITY_API_KEY not found in st.secrets.")
+             SOURCE_MESSAGE = "Key Source: Streamlit Secrets (Not Found)"
+             
+    except FileNotFoundError:
+        logging.info("secrets.toml file not found (expected locally). Skipping st.secrets.")
+        SOURCE_MESSAGE = "Key Source: Streamlit Secrets (File Not Found)"
     except Exception as e:
         logging.error(f"An unexpected error occurred while accessing st.secrets: {e}")
-        PERPLEXITY_API_KEY = None
+        SOURCE_MESSAGE = f"Key Source: Streamlit Secrets (Error: {e})"
 
 # --- Add Debugging Output Early --- 
-# This will show up in the UI even if the rest fails
+st.sidebar.info(SOURCE_MESSAGE) # Show where the key was (or wasn't) found
 if API_KEY_LOADED_SUCCESSFULLY:
-    st.sidebar.success(f"API Key Status: Loaded successfully from {SOURCE}") 
+    # Mask key for display
+    masked_key = f"{PERPLEXITY_API_KEY[:7]}...{PERPLEXITY_API_KEY[-4:]}" if PERPLEXITY_API_KEY and len(PERPLEXITY_API_KEY) > 11 else "Invalid Key Format"
+    st.sidebar.success(f"API Key Status: Loaded ({masked_key})")
 else:
     st.sidebar.error("API Key Status: NOT loaded.")
 # --- End Debugging Output ---
@@ -56,21 +79,24 @@ PERPLEXITY_API_BASE_URL = "https://api.perplexity.ai"
 
 openai_client = None
 if PERPLEXITY_API_KEY:
+    # Log the key just before use (masked)
+    masked_key_for_log = f"{PERPLEXITY_API_KEY[:7]}...{PERPLEXITY_API_KEY[-4:]}" if PERPLEXITY_API_KEY and len(PERPLEXITY_API_KEY) > 11 else "Invalid Key Format"
+    logging.info(f"Attempting to initialize OpenAI client with key: {masked_key_for_log}")
     try:
         openai_client = OpenAI(api_key=PERPLEXITY_API_KEY, base_url=PERPLEXITY_API_BASE_URL)
         logging.info("OpenAI client initialized pointing to Perplexity API.")
         st.sidebar.success("API Client Status: Initialized.")
     except Exception as client_init_error:
         logging.error(f"Failed to initialize OpenAI client: {client_init_error}", exc_info=True)
-        openai_client = None # Ensure client is None if init fails
-        st.sidebar.error("API Client Status: Failed to initialize.")
+        openai_client = None 
+        st.sidebar.error(f"API Client Status: Failed ({client_init_error})") # Show error detail
 else:
     st.sidebar.warning("API Client Status: Not initialized (No API Key).")
 
-# Error message shown only if API key is STILL None or client failed
-if not openai_client:
-    st.error(f"ERROR: Perplexity API key not found or client failed to initialize (checked {SOURCE}). Please verify configuration and reboot the app if secrets were just added.")
-    st.stop() # Explicitly stop execution here if client fails
+# Error message shown only if client is STILL None
+if not openai_client: 
+    st.error(f"ERROR: Perplexity API client could not be initialized. Status: {st.sidebar.elements[2].label}. Please check API Key and app logs.") # Reference sidebar status
+    st.stop()
 
 NEGATIVE_KEYWORDS = '(arrest OR bankruptcy OR BSA OR conviction OR criminal OR fraud OR trafficking OR lawsuit OR "money laundering" OR OFAC OR Ponzi OR terrorist OR violation OR "honorary consul" OR consul OR "Panama Papers" OR theft OR corruption OR bribery)'
 PERPLEXITY_MODEL = "sonar-pro"
