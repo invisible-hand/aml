@@ -1,0 +1,14 @@
+# streamlit app dependencies
+streamlit==1.32.0
+python-dotenv==1.0.1
+openai==1.28.0 # Used for Perplexity API
+reportlab==4.1.0
+requests==2.31.0 # Potentially needed by dependencies
+
+# Removed:
+# flask==3.0.2
+# google-generativeai==0.3.2
+# selenium==4.18.1 # Removed
+# webdriver-manager==4.0.1 # Removed
+# tavily-python==0.3.0 # Removed (using Perplexity)
+# WeasyPrint==61.2 # Removed 
