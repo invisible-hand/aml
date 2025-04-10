@@ -17,7 +17,7 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 
 # --- Page Config (MUST be the first Streamlit command) ---
-st.set_page_config(page_title="Bulk Company Research", layout="wide")
+st.set_page_config(page_title="Axos Internal AML Demo", layout="wide")
 
 # Configure logging (optional for Streamlit, but can be helpful)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -133,14 +133,18 @@ def search_with_perplexity(company_name):
         logging.error("OpenAI client (for Perplexity) not initialized.")
         return {"status": "failed", "error": "Perplexity API client not initialized.", "answer": None, "citations": [], "aml_grade": None}
     try:
+        # Updated Prompt: Ask for explicit separation with headings
         prompt = (
             f"First, on a single line, provide an Anti-Money Laundering (AML) risk grade for the company '{company_name}' based *only* on the negative news search results below. Use a scale from A (very low risk) to F (very high risk). Format this line ONLY as: 'AML Risk Grade: [GRADE]'. "
-            f"\n\nThen, using **plain text only (no markdown)**, provide a brief summary of the company '{company_name}'. "
-            f"\n\nAfter the summary, using **plain text only (no markdown)**, search for and summarize any negative news regarding this company, focusing *only* on the following keywords: {NEGATIVE_KEYWORDS}. "
-            f"\n\nUse double line breaks to clearly separate the company summary from the negative news summary. Provide citations as numeric references like [1], [2] etc., within the text where applicable."
+            f"\n\nThen, using **plain text only (no markdown)**, provide a section clearly titled '## Company Summary' with a brief summary of the company '{company_name}'. "
+            f"\n\nAfter the summary, using **plain text only (no markdown)**, provide a section clearly titled '## Negative News Findings' summarizing any negative news found regarding this company, focusing *only* on the following keywords: {NEGATIVE_KEYWORDS}. If no relevant negative news is found, state that clearly under the heading. "
+            f"\n\nUse double line breaks between paragraphs. Provide citations as numeric references like [1], [2] etc., within the text where applicable."
         )
         messages = [
-            {"role": "system", "content": "You are an AI assistant performing company research... plain text only..."},
+            {
+                "role": "system",
+                "content": "You are an AI assistant performing company research. Provide an AML risk grade based *only* on specified negative keywords. Then summarize the company and negative news findings separately under the specific headings '## Company Summary' and '## Negative News Findings' using **plain text only** and numeric citations like [1].",
+            },
             {"role": "user", "content": prompt},
         ]
         logging.info(f"Calling Perplexity API (model: {PERPLEXITY_MODEL})...")
@@ -255,7 +259,7 @@ def generate_pdf_bytes(company_name, data):
         return None
 
 # --- Streamlit App UI ---
-st.title("Bulk Company Research Tool")
+st.title("Axos Internal AML Demo")
 st.markdown("Enter company names (one per line) to generate PDF research reports including summaries, negative news analysis (based on specific keywords), and an AML risk grade.")
 
 company_names_input = st.text_area("Company Names (one per line)", height=150, placeholder="e.g.\nGoogle\nMicrosoft\nNonExistent Company Example")
@@ -287,6 +291,7 @@ if start_button and company_names_input:
             pdf_bytes = None
             status = search_data["status"]
             error_message = search_data["error"]
+            aml_grade = search_data.get("aml_grade") # Get the grade
             
             if status == "success":
                 pdf_bytes = generate_pdf_bytes(name, search_data)
@@ -298,7 +303,8 @@ if start_button and company_names_input:
                 'name': name,
                 'status': status,
                 'error_message': error_message,
-                'pdf_bytes': pdf_bytes
+                'pdf_bytes': pdf_bytes,
+                'aml_grade': aml_grade # Store the grade
             })
             
         # Update progress bar
@@ -314,17 +320,30 @@ if start_button and company_names_input:
     cols = st.columns(2) # Create two columns for results
     current_col = 0
     
+    # Function to get color for grade
+    def get_grade_color(grade):
+        if grade == 'A': return "green"
+        if grade == 'B': return "#90EE90" # lightgreen
+        if grade == 'C': return "orange"
+        if grade == 'D': return "#FF4500" # orangered
+        if grade == 'F': return "red"
+        return "grey"
+        
     for result in results_list:
         with cols[current_col]:
             if result['status'] == 'success' and result['pdf_bytes']:
                 safe_name = "".join(c if c.isalnum() else '_' for c in result['name'])
-                st.markdown(f"**{result['name']}**")
+                # Display Name and Grade
+                grade = result.get('aml_grade', 'N/A')
+                grade_color = get_grade_color(grade)
+                st.markdown(f"**{result['name']}** &nbsp; <span style='color:{grade_color}; font-weight:bold;'>[AML Risk: {grade}]</span>", unsafe_allow_html=True)
+                
                 st.download_button(
                     label=f"Download PDF",
                     data=result['pdf_bytes'],
                     file_name=f"{safe_name}_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf",
-                    key=f"download_{safe_name}_{i}" # Unique key for each button
+                    key=f"download_{safe_name}_{i}" # Use index 'i' if available or generate unique key
                 )
             else:
                 st.error(f"**{result['name']}**: Failed ({result.get('error_message', 'Unknown error')})")
