@@ -78,21 +78,17 @@ else:
 PERPLEXITY_API_BASE_URL = "https://api.perplexity.ai"
 
 openai_client = None
-client_init_error_msg = None # Store specific error message
+client_init_error_msg = None
 
 if PERPLEXITY_API_KEY:
     # Log the key just before use (masked)
     masked_key_for_log = f"{PERPLEXITY_API_KEY[:7]}...{PERPLEXITY_API_KEY[-4:]}" if PERPLEXITY_API_KEY and len(PERPLEXITY_API_KEY) > 11 else "Invalid Key Format"
     logging.info(f"Attempting to initialize OpenAI client with key: {masked_key_for_log}")
     try:
-        # Explicitly create an httpx client that ignores system proxies
-        # http_client = httpx.Client(proxies=None) 
-        
-        # Revert to standard OpenAI client initialization
+        # Standard OpenAI client initialization targeting Perplexity
         openai_client = OpenAI(
-            api_key=PERPLEXITY_API_KEY, 
+            api_key=PERPLEXITY_API_KEY,
             base_url=PERPLEXITY_API_BASE_URL
-            # http_client=http_client # <-- REMOVE THIS PARAMETER
         )
         logging.info("OpenAI client initialized pointing to Perplexity API.")
         st.sidebar.success("API Client Status: Initialized.")
