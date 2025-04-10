@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import re
 import io # For handling PDF data in memory
+import httpx # Re-import httpx
 
 # Import ReportLab components
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -85,18 +86,22 @@ if PERPLEXITY_API_KEY:
     masked_key_for_log = f"{PERPLEXITY_API_KEY[:7]}...{PERPLEXITY_API_KEY[-4:]}" if PERPLEXITY_API_KEY and len(PERPLEXITY_API_KEY) > 11 else "Invalid Key Format"
     logging.info(f"Attempting to initialize OpenAI client with key: {masked_key_for_log}")
     try:
-        # Standard OpenAI client initialization targeting Perplexity
+        # RE-ADD: Explicitly create an httpx client that ignores system proxies
+        http_client = httpx.Client(proxies=None)
+        
+        # RE-ADD: Pass the custom http_client
         openai_client = OpenAI(
-            api_key=PERPLEXITY_API_KEY,
-            base_url=PERPLEXITY_API_BASE_URL
+            api_key=PERPLEXITY_API_KEY, 
+            base_url=PERPLEXITY_API_BASE_URL,
+            http_client=http_client 
         )
         logging.info("OpenAI client initialized pointing to Perplexity API.")
         st.sidebar.success("API Client Status: Initialized.")
     except Exception as client_init_error:
-        client_init_error_msg = str(client_init_error) # Store error message
+        client_init_error_msg = str(client_init_error) 
         logging.error(f"Failed to initialize OpenAI client: {client_init_error_msg}", exc_info=True)
         openai_client = None 
-        st.sidebar.error(f"API Client Status: Failed ({client_init_error_msg})") # Show error detail
+        st.sidebar.error(f"API Client Status: Failed ({client_init_error_msg})")
 else:
     st.sidebar.warning("API Client Status: Not initialized (No API Key).")
 
