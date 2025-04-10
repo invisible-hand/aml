@@ -8,6 +8,7 @@ import logging
 import re
 import io # For handling PDF data in memory
 import httpx # Re-import httpx
+import zipfile # Import zipfile
 
 # Import ReportLab components
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -124,8 +125,30 @@ if not openai_client:
     st.error(final_error_msg)
     st.stop()
 
+# --- Helper function for Grade Color ---
+def get_grade_color(grade):
+    if grade == 'A': return "green"
+    if grade == 'B': return "#90EE90" # lightgreen
+    if grade == 'C': return "orange"
+    if grade == 'D': return "#FF4500" # orangered
+    if grade == 'F': return "red"
+    return "grey"
+# --- End Helper Function ---
+
+# --- Constants ---
 NEGATIVE_KEYWORDS = '(arrest OR bankruptcy OR BSA OR conviction OR criminal OR fraud OR trafficking OR lawsuit OR "money laundering" OR OFAC OR Ponzi OR terrorist OR violation OR "honorary consul" OR consul OR "Panama Papers" OR theft OR corruption OR bribery)'
 PERPLEXITY_MODEL = "sonar-pro"
+
+# --- Helper function for Inline Markdown (Bold/Italic) ---
+def apply_inline_markdown(text):
+    # Convert **bold** -> <b>bold</b>
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    # Convert *italic* -> <i>italic</i> (avoiding **)
+    text = re.sub(r'\*(?![*\s])(.*?)(?<![*\s])\*', r'<i>\1</i>', text)
+    # Replace literal newlines with <br/> for reportlab Paragraph
+    text = text.replace('\n', '<br/>\n')
+    return text
+# --- End Helper Function ---
 
 # --- Core Functions (Adapted from Flask app) ---
 
@@ -140,14 +163,14 @@ def search_with_perplexity(company_name):
         # Updated Prompt: Ask for explicit separation with headings
         prompt = (
             f"First, on a single line, provide an Anti-Money Laundering (AML) risk grade for the company '{company_name}' based *only* on the negative news search results below. Use a scale from A (very low risk) to F (very high risk). Format this line ONLY as: 'AML Risk Grade: [GRADE]'. "
-            f"\n\nThen, using **plain text only (no markdown)**, provide a section clearly titled '## Company Summary' with a brief summary of the company '{company_name}'. "
-            f"\n\nAfter the summary, using **plain text only (no markdown)**, provide a section clearly titled '## Negative News Findings' summarizing any negative news found regarding this company, focusing *only* on the following keywords: {NEGATIVE_KEYWORDS}. If no relevant negative news is found, state that clearly under the heading. "
+            f"\n\nThen provide a section clearly titled (bold text) 'Company Summary' with a brief summary of the company '{company_name}'. Insert two line breaks after the summary.  "
+            f"\n\nAfter the summary, provide a section clearly titled (bold text) 'Negative News Findings' summarizing any negative news found regarding this company, focusing *only* on the following keywords: {NEGATIVE_KEYWORDS}. If no relevant negative news is found, state that clearly under the heading. "
             f"\n\nUse double line breaks between paragraphs. Provide citations as numeric references like [1], [2] etc., within the text where applicable."
         )
         messages = [
             {
                 "role": "system",
-                "content": "You are an AI assistant performing company research. Provide an AML risk grade based *only* on specified negative keywords. Then summarize the company and negative news findings separately under the specific headings '## Company Summary' and '## Negative News Findings' using **plain text only** and numeric citations like [1].",
+                "content": "You are an AI assistant performing company research. Provide an AML risk grade based *only* on specified negative keywords. Then summarize the company and negative news findings separately under the specific headings '## Company Summary' and '## Negative News Findings' and numeric citations like [1].",
             },
             {"role": "user", "content": prompt},
         ]
@@ -230,11 +253,44 @@ def generate_pdf_bytes(company_name, data):
         story.append(Paragraph(f"Research Report: {company_name}", title_style))
         story.append(Spacer(1, 0.2*inch))
 
-        # --- Summary & Analysis (Plain Text Rendering - same logic) ---
+        # --- Summary & Analysis (Parse and Format Sections) ---
+        answer_text = data.get("answer", "N/A").strip()
+        
+        # Define styles
+        h2_style = styles['h2']
         body_style = ParagraphStyle(name='BodyText', parent=styles['Normal'], spaceBefore=6, spaceAfter=6, leading=14, fontSize=10, alignment=TA_LEFT)
-        answer_text = data.get("answer", "N/A")
-        escaped_answer = answer_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        story.append(Paragraph(f'<pre>{escaped_answer}</pre>', body_style))
+
+        # Split content based on expected headings
+        # Use regex to split while keeping delimiters (headings)
+        # Pattern looks for '## Heading Name' possibly followed by newlines
+        parts = re.split(r'(^## Company Summary\n*|^## Negative News Findings\n*)', answer_text, flags=re.MULTILINE)
+        
+        # Filter out empty strings resulting from split
+        parts = [p.strip() for p in parts if p and p.strip()]
+
+        if len(parts) > 1: # If headings were found and split occurred
+            current_heading_style = None
+            for part in parts:
+                if part == "## Company Summary":
+                    current_heading_style = h2_style
+                    story.append(Spacer(1, 0.1*inch))
+                    story.append(Paragraph("Company Summary", current_heading_style))
+                    story.append(Spacer(1, 0.05*inch))
+                elif part == "## Negative News Findings":
+                    current_heading_style = h2_style
+                    story.append(Spacer(1, 0.2*inch)) # More space before this section
+                    story.append(Paragraph("Negative News Findings", current_heading_style))
+                    story.append(Spacer(1, 0.05*inch))
+                else:
+                    # This is the text content following a heading
+                    formatted_text = apply_inline_markdown(part)
+                    story.append(Paragraph(formatted_text, body_style))
+        else:
+            # Fallback: If headings weren't found, render the whole block
+            logging.warning(f"Could not find expected headings in response for {company_name}. Rendering as plain block.")
+            escaped_answer = answer_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            story.append(Paragraph(f'<pre>{escaped_answer}</pre>', body_style))
+
         story.append(Spacer(1, 0.2*inch))
 
         # --- Citations Section (same styling logic) ---
@@ -274,9 +330,7 @@ if start_button and company_names_input:
     company_names = [name.strip() for name in company_names_input.split('\n') if name.strip()]
     st.info(f"Processing {len(company_names)} company name(s)... Please wait.")
     
-    # Clear previous results from session state when starting a new generation
-    st.session_state.results_list = []
-
+    st.session_state.results_list = [] 
     progress_bar = st.progress(0)
     total_names = len(company_names)
 
@@ -286,7 +340,7 @@ if start_button and company_names_input:
             pdf_bytes = None
             status = search_data["status"]
             error_message = search_data["error"]
-            aml_grade = search_data.get("aml_grade") # Get the grade
+            aml_grade = search_data.get("aml_grade")
             
             if status == "success":
                 pdf_bytes = generate_pdf_bytes(name, search_data)
@@ -294,57 +348,66 @@ if start_button and company_names_input:
                     status = "failed"
                     error_message = "PDF generation failed."
             
-            # Append results to SESSION STATE instead of a temporary list
             st.session_state.results_list.append({
                 'name': name,
                 'status': status,
                 'error_message': error_message,
                 'pdf_bytes': pdf_bytes,
-                'aml_grade': aml_grade # Store the grade
+                'aml_grade': aml_grade
             })
             
-        # Update progress bar
         progress_bar.progress((i + 1) / total_names)
 
-    # Display results with download buttons after processing all
     st.success("Processing Complete!")
+    progress_bar.empty()
     
+# --- Display Results Status and Download All Button ---
+if st.session_state.results_list:
     st.divider()
-    st.subheader("Download Reports:")
+    st.subheader("Processing Status:")
     
-    cols = st.columns(2) # Create two columns for results
-    current_col = 0
-    
-    # Function to get color for grade
-    def get_grade_color(grade):
-        if grade == 'A': return "green"
-        if grade == 'B': return "#90EE90" # lightgreen
-        if grade == 'C': return "orange"
-        if grade == 'D': return "#FF4500" # orangered
-        if grade == 'F': return "red"
-        return "grey"
-        
+    successful_pdfs = []
+    status_cols = st.columns(2)
+    current_status_col = 0
     for result in st.session_state.results_list:
-        with cols[current_col]:
+        with status_cols[current_status_col]:
+            grade = result.get('aml_grade', 'N/A')
+            grade_color = get_grade_color(grade) # Now the function is defined!
             if result['status'] == 'success' and result['pdf_bytes']:
-                safe_name = "".join(c if c.isalnum() else '_' for c in result['name'])
-                # Display Name and Grade
-                grade = result.get('aml_grade', 'N/A')
-                grade_color = get_grade_color(grade)
-                st.markdown(f"**{result['name']}** &nbsp; <span style='color:{grade_color}; font-weight:bold;'>[AML Risk: {grade}]</span>", unsafe_allow_html=True)
-                
-                st.download_button(
-                    label=f"Download PDF",
-                    data=result['pdf_bytes'],
-                    file_name=f"{safe_name}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf",
-                    key=f"download_{safe_name}_{i}" # Use index 'i' if available or generate unique key
-                )
+                st.success(f"✅ {result['name']} [AML: {grade}] - PDF Generated")
+                successful_pdfs.append(result) # Add to list for zipping
+            elif result['status'] == 'success': # Search worked but PDF failed
+                 st.warning(f"⚠️ {result['name']} [AML: {grade}] - {result.get('error_message', 'PDF Error')}")
             else:
-                st.error(f"**{result['name']}**: Failed ({result.get('error_message', 'Unknown error')})")
-            st.markdown("&nbsp;") # Add a little space below each item
-            
-        current_col = 1 - current_col # Alternate columns
+                st.error(f"❌ {result['name']} - Failed ({result.get('error_message', 'Unknown error')})")
+        current_status_col = 1 - current_status_col
+    
+    # --- Create Zip Archive and Download Button --- 
+    if successful_pdfs:
+        st.divider()
+        st.subheader("Download All Reports")
         
+        # Create zip in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for result in successful_pdfs:
+                # Create a safe filename for inside the zip
+                safe_name = "".join(c if c.isalnum() else '_' for c in result['name'])
+                pdf_filename = f"{safe_name}_AML_Report.pdf"
+                zipf.writestr(pdf_filename, result['pdf_bytes'])
+        
+        zip_buffer.seek(0)
+        
+        st.download_button(
+            label="Download All PDFs (.zip)",
+            data=zip_buffer,
+            file_name=f"Company_AML_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
+            mime="application/zip",
+            key="download_all_zip"
+        )
+    else:
+        st.info("No PDF reports were successfully generated to download.")
+
+# Keep this warning logic
 elif start_button and not company_names_input:
     st.warning("Please enter at least one company name.") 
