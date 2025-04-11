@@ -135,10 +135,6 @@ def get_grade_color(grade):
     return "grey"
 # --- End Helper Function ---
 
-# --- Constants ---
-NEGATIVE_KEYWORDS = '(arrest OR bankruptcy OR BSA OR conviction OR criminal OR fraud OR trafficking OR lawsuit OR "money laundering" OR OFAC OR Ponzi OR terrorist OR violation OR "honorary consul" OR consul OR "Panama Papers" OR theft OR corruption OR bribery)'
-PERPLEXITY_MODEL = "sonar-pro"
-
 # --- Helper function for Inline Markdown (Bold/Italic) ---
 def apply_inline_markdown(text):
     # Convert **bold** -> <b>bold</b>
@@ -149,6 +145,10 @@ def apply_inline_markdown(text):
     text = text.replace('\n', '<br/>\n')
     return text
 # --- End Helper Function ---
+
+# --- Constants ---
+NEGATIVE_KEYWORDS = '(arrest OR bankruptcy OR BSA OR conviction OR criminal OR fraud OR trafficking OR lawsuit OR "money laundering" OR OFAC OR Ponzi OR terrorist OR violation OR "honorary consul" OR consul OR "Panama Papers" OR theft OR corruption OR bribery)'
+PERPLEXITY_MODEL = "sonar-pro"
 
 # --- Core Functions (Adapted from Flask app) ---
 
@@ -320,14 +320,52 @@ def generate_pdf_bytes(company_name, data):
 
 # --- Streamlit App UI ---
 st.title("Axos Internal AML Demo")
-st.markdown("Enter company names (one per line) to generate PDF research reports including summaries, negative news analysis (based on specific keywords), and an AML risk grade.")
+st.markdown("Enter company names (one per line) to generate PDF research reports.")
 
-company_names_input = st.text_area("Company Names (one per line)", height=150, placeholder="e.g.\nGoogle\nMicrosoft\nNonExistent Company Example")
+if not openai_client:
+    st.stop() 
+
+company_names_input = st.text_area(
+    "Company Names (one per line)",
+    height=150,
+    placeholder="e.g.\nGoogle\nMicrosoft\nNonExistent Company Example",
+    key="company_names_text_area" # Keep key for stability
+)
+
+# --- Add Simple Line Counter Back --- 
+if company_names_input:
+    lines = [line.strip() for line in company_names_input.split('\n') if line.strip()]
+    line_count = len(lines)
+else:
+    line_count = 0
+st.caption(f"Names Entered: {line_count}") # Display the count using st.caption
+# --- End Line Counter ---
+
+# --- Add Optional Local Save Path Input --- 
+destination_path_input = st.text_input(
+    "Optional: Local Folder Path to Save PDFs Directly", 
+    placeholder="e.g., /Users/yourname/Documents/AML_Reports or C:\\Users\\YourName\\Documents\\Reports",
+    help="If provided, PDFs will be saved here *only when running locally*. If empty or invalid, a zip download will be offered."
+)
+st.warning("⚠️ Direct saving to a local folder only works when this app is run locally on your machine, not when deployed.", icon="⚠️")
+# --- End Optional Local Save Path Input ---
 
 start_button = st.button("Generate PDF Reports")
 
 if start_button and company_names_input:
     company_names = [name.strip() for name in company_names_input.split('\n') if name.strip()]
+    destination_path = destination_path_input.strip() # Get the path from input
+    
+    # Validate destination path if provided (simple check for existence as directory)
+    save_locally = False
+    if destination_path:
+        if os.path.isdir(destination_path):
+            save_locally = True
+            st.info(f"Valid local path provided. PDFs will be saved to: {destination_path}")
+        else:
+            st.error(f"Invalid Destination Path: '{destination_path}' is not a valid directory. PDFs will be zipped for download instead.")
+            destination_path = "" # Clear path if invalid
+            
     st.info(f"Processing {len(company_names)} company name(s)... Please wait.")
     
     st.session_state.results_list = [] 
@@ -335,9 +373,14 @@ if start_button and company_names_input:
     total_names = len(company_names)
 
     for i, name in enumerate(company_names):
+        pdf_bytes = None
+        status = "failed" # Default status
+        error_message = "Processing not started."
+        aml_grade = None
+        save_location_message = "" # Message indicating save status
+        
         with st.spinner(f"Researching {name}..."):
             search_data = search_with_perplexity(name)
-            pdf_bytes = None
             status = search_data["status"]
             error_message = search_data["error"]
             aml_grade = search_data.get("aml_grade")
@@ -347,13 +390,35 @@ if start_button and company_names_input:
                 if pdf_bytes is None:
                     status = "failed"
                     error_message = "PDF generation failed."
-            
+                else:
+                    # --- Attempt Direct Local Save if path provided --- 
+                    if save_locally and destination_path:
+                        safe_company_name = "".join(c if c.isalnum() else '_' for c in name)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        pdf_filename = f"{safe_company_name}_{timestamp}.pdf"
+                        filepath = os.path.join(destination_path, pdf_filename)
+                        try:
+                            with open(filepath, 'wb') as f:
+                                f.write(pdf_bytes)
+                            logging.info(f"Successfully saved PDF locally: {filepath}")
+                            save_location_message = f"Saved to: {destination_path}"
+                            pdf_bytes = None # Clear bytes as it's saved, won't be zipped
+                        except Exception as save_error:
+                            logging.error(f"Failed to save PDF locally to {filepath}: {save_error}")
+                            status = "warning" # Mark as warning, PDF still available for zip
+                            error_message = f"PDF Gen OK, but local save failed: {save_error}"
+                            save_location_message = "Local save failed, see zip."
+                    elif pdf_bytes: # If not saving locally, indicate it's for the zip
+                         save_location_message = "Ready for zip download."
+                    # --- End Direct Local Save --- 
+                         
             st.session_state.results_list.append({
                 'name': name,
                 'status': status,
                 'error_message': error_message,
-                'pdf_bytes': pdf_bytes,
-                'aml_grade': aml_grade
+                'pdf_bytes': pdf_bytes, # Will be None if saved locally successfully
+                'aml_grade': aml_grade,
+                'save_location_message': save_location_message # Store save status
             })
             
         progress_bar.progress((i + 1) / total_names)
@@ -361,52 +426,67 @@ if start_button and company_names_input:
     st.success("Processing Complete!")
     progress_bar.empty()
     
-# --- Display Results Status and Download All Button ---
+# --- Display Results Status and Conditional Download All Button ---
 if st.session_state.results_list:
     st.divider()
-    st.subheader("Processing Status:")
+    st.subheader("Processing Results:")
     
-    successful_pdfs = []
+    pdfs_for_zip = [] # Store results that need zipping
     status_cols = st.columns(2)
     current_status_col = 0
     for result in st.session_state.results_list:
         with status_cols[current_status_col]:
             grade = result.get('aml_grade', 'N/A')
-            grade_color = get_grade_color(grade) # Now the function is defined!
-            if result['status'] == 'success' and result['pdf_bytes']:
-                st.success(f"✅ {result['name']} [AML: {grade}] - PDF Generated")
-                successful_pdfs.append(result) # Add to list for zipping
-            elif result['status'] == 'success': # Search worked but PDF failed
-                 st.warning(f"⚠️ {result['name']} [AML: {grade}] - {result.get('error_message', 'PDF Error')}")
-            else:
+            # grade_color = get_grade_color(grade)
+            save_msg = result.get('save_location_message', '')
+
+            if result['status'] == 'success' and result.get('pdf_bytes') is None and save_msg:
+                # Successfully saved locally
+                st.success(f"✅ {result['name']} [AML: {grade}] - {save_msg}")
+            elif result['status'] == 'success' and result.get('pdf_bytes') is not None:
+                # Generated, ready for zip
+                st.info(f"ℹ️ {result['name']} [AML: {grade}] - {save_msg}")
+                pdfs_for_zip.append(result)
+            elif result['status'] == 'warning': # PDF Gen OK, local save failed
+                 st.warning(f"⚠️ {result['name']} [AML: {grade}] - {save_msg}")
+                 if result.get('pdf_bytes') is not None:
+                     pdfs_for_zip.append(result) # Still add to zip if save failed
+            else: # status == 'failed'
                 st.error(f"❌ {result['name']} - Failed ({result.get('error_message', 'Unknown error')})")
         current_status_col = 1 - current_status_col
     
-    # --- Create Zip Archive and Download Button --- 
-    if successful_pdfs:
+    # --- Create Zip Archive and Download Button (only if needed) --- 
+    if pdfs_for_zip:
         st.divider()
-        st.subheader("Download All Reports")
+        st.subheader("Download Pending Reports")
+        st.info("Some reports were not saved locally (or no local path was specified). Download them as a .zip file.")
         
-        # Create zip in memory
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for result in successful_pdfs:
-                # Create a safe filename for inside the zip
+            for result in pdfs_for_zip:
                 safe_name = "".join(c if c.isalnum() else '_' for c in result['name'])
                 pdf_filename = f"{safe_name}_AML_Report.pdf"
-                zipf.writestr(pdf_filename, result['pdf_bytes'])
+                # Ensure we actually have bytes before writing
+                if result.get('pdf_bytes'): 
+                    zipf.writestr(pdf_filename, result['pdf_bytes'])
+                else: # Should not happen if logic is correct, but safety check
+                     logging.warning(f"Attempted to zip {result['name']} but pdf_bytes was None.")
         
         zip_buffer.seek(0)
         
         st.download_button(
-            label="Download All PDFs (.zip)",
+            label="Download Pending PDFs (.zip)",
             data=zip_buffer,
             file_name=f"Company_AML_Reports_{datetime.now().strftime('%Y%m%d')}.zip",
             mime="application/zip",
-            key="download_all_zip"
+            key="download_pending_zip"
         )
+    elif any(res['status'] == 'success' for res in st.session_state.results_list):
+        # Check if any succeeded, even if all saved locally
+        st.success("All generated reports were saved directly to the specified local folder.")
     else:
-        st.info("No PDF reports were successfully generated to download.")
+        # If nothing succeeded or was zipped
+        st.info("No PDF reports were successfully generated.")
 
 # Keep this warning logic
 elif start_button and not company_names_input:
